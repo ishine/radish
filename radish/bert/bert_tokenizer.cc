@@ -14,9 +14,7 @@
 #include <cwctype>
 #include <fstream>
 
-#include "absl/strings/ascii.h"
-#include "absl/strings/str_split.h"
-#include "absl/strings/strip.h"
+#include "radish/utils/basic_string_util.h"
 #include "radish/utils/logging.h"
 #include "source/utf8.h"
 #include "utf8proc.h"
@@ -33,7 +31,20 @@ static std::unordered_set<uint16_t> kChinesePunts = {
 static int kMaxCharsPerWords = 100;
 
 bool BertTokenizer::Init(std::string vocab_file) {
-  load_vocab_(vocab_file);
+  std::ifstream ifs(vocab_file);
+  if (!ifs) {
+    return false;
+  }
+  std::string content((std::istreambuf_iterator<char>(ifs)),
+                      (std::istreambuf_iterator<char>()));
+  return InitByFileContent(content);
+}
+
+bool BertTokenizer::InitByFileContent(std::string content) {
+
+  std::vector<std::string> lines;
+  BasicStringUtil::SplitString(content.c_str(), content.size(),'\n',&lines);
+  init_from_lines(lines);
   if (token_2_id_map_.find(kPadToken) == token_2_id_map_.end()) {
     return false;
   }
@@ -59,7 +70,7 @@ bool BertTokenizer::Init(std::string vocab_file) {
 std::vector<int> BertTokenizer::Encode(std::string text) {
   (void)s_bRegistered;  // force the registeration
   std::vector<int> results;
-  absl::RemoveExtraAsciiWhitespace(&text);
+  text =BasicStringUtil::StripStringASCIIWhole(text);
   char* nfkcstr = reinterpret_cast<char*>(
       utf8proc_NFD(reinterpret_cast<const unsigned char*>(text.c_str())));
   if (nfkcstr == nullptr) {
@@ -68,7 +79,7 @@ std::vector<int> BertTokenizer::Encode(std::string text) {
   }
   text.assign(nfkcstr, strlen(nfkcstr));
   free(nfkcstr);
-  text = absl::AsciiStrToLower(text);
+  BasicStringUtil::ToLower(text);
   UString unicodes;
   utf8::utf8to16(text.c_str(), text.c_str() + text.size(),
                  std::back_inserter(unicodes));
@@ -79,7 +90,8 @@ std::vector<int> BertTokenizer::Encode(std::string text) {
       reinterpret_cast<const uint16_t*>(unicodes.c_str()),
       reinterpret_cast<const uint16_t*>(unicodes.c_str() + unicodes.size()),
       std::back_inserter(newtext));
-  std::vector<std::string> tokens = absl::StrSplit(newtext, ' ');
+  std::vector<std::string> tokens;
+  BasicStringUtil::SplitString(newtext.c_str(), newtext.size(), ' ', &tokens);
   for (auto s : tokens) {
     if (s.size() > kMaxCharsPerWords) {
       results.push_back(token_2_id_map_.at(kUnkToken));
@@ -141,7 +153,25 @@ std::string BertTokenizer::Id2Word(int id) const {
   return kUnkToken;
 }
 
-void BertTokenizer::load_vocab_(std::string path) {
+void BertTokenizer::init_from_lines(const std::vector<std::string>& lines) {
+  int idx = 0;
+  for (size_t i = 0; i < lines.size(); i++) {
+    std::string line = lines[i];
+    size_t nn = line.size();
+    while (nn > 0 && (line[nn - 1] == '\n' || line[nn - 1] == '\r')) {
+      nn -= 1;
+    }
+    if (nn == 0) {
+      continue;
+    }
+    std::string token = line.substr(0, nn);
+    tokens_.push_back(token);
+    token_2_id_map_[token] = idx;
+    idx += 1;
+  }
+}
+void BertTokenizer::load_vocab_(std::string path,
+                                std::vector<std::string>& lines) {
   FILE* fp = fopen(path.c_str(), "r");
   CHECK(fp != NULL) << "open file error:" << path;
   char line[4096] = {0};
@@ -154,10 +184,7 @@ void BertTokenizer::load_vocab_(std::string path) {
     if (nn <= 0) {
       continue;
     }
-    std::string token(line, nn);
-    tokens_.push_back(token);
-    token_2_id_map_[token] = idx;
-    idx += 1;
+    lines.push_back(std::string(line, nn));
   }
   fclose(fp);
 }
